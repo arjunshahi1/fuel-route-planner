@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+
+# Secrets / local config
+.env
+
+# Large public datasets downloaded by `build_geocodes` (re-downloadable)
+data/raw/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
