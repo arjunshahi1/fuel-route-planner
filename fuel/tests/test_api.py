@@ -60,7 +60,9 @@ class RoutePlanApiTests(TestCase):
 
         self.assertEqual(data["route"]["distance_miles"], round(ROUTE_MILES, 1))
         self.assertEqual(data["summary"]["number_of_stops"], len(data["fuel_stops"]))
-        self.assertAlmostEqual(data["summary"]["total_gallons"], ROUTE_MILES / 10, places=2)
+        detour = sum(s["detour_gallons"] for s in data["fuel_stops"])
+        self.assertAlmostEqual(data["summary"]["total_gallons_purchased"], ROUTE_MILES / 10 + detour, places=2)
+        self.assertEqual(data["summary"]["starting_fuel_gallons"], 0)
         self.assertAlmostEqual(
             data["summary"]["total_fuel_cost"], round(sum(s["cost"] for s in data["fuel_stops"]), 2), places=2
         )
@@ -120,16 +122,35 @@ class RoutePlanApiTests(TestCase):
         ).json()
         self.assertEqual(cheapest["summary"]["stop_penalty"], 0)
         self.assertEqual(
-            cheapest["summary"]["cheapest_possible"],
+            cheapest["cheapest_possible"],
             {
                 "total_fuel_cost": cheapest["summary"]["total_fuel_cost"],
                 "number_of_stops": cheapest["summary"]["number_of_stops"],
+                "fuel_stops": cheapest["fuel_stops"],
             },
         )
         default = self.post().json()
         self.assertEqual(default["summary"]["stop_penalty"], settings.FUEL_PLANNER["STOP_PENALTY"])
         self.assertGreaterEqual(default["summary"]["total_fuel_cost"], cheapest["summary"]["total_fuel_cost"])
         self.assertLessEqual(default["summary"]["number_of_stops"], cheapest["summary"]["number_of_stops"])
+
+    def test_start_without_a_nearby_station_uses_a_full_tank(self):
+        # Like Houston -> Dallas: the price data has no station near the start.
+        FuelStation.objects.filter(opis_id=1).delete()
+        clear_station_index()
+        resp = self.post()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()
+        self.assertEqual(data["summary"]["starting_fuel_gallons"], 50.0)
+        self.assertAlmostEqual(
+            data["summary"]["fuel_used_gallons"],
+            data["summary"]["starting_fuel_gallons"] + data["summary"]["total_gallons_purchased"],
+            places=1,
+        )
+        self.assertNotIn("STATION 1", [s["name"] for s in data["fuel_stops"]])
+        self.assertTrue(any("full tank" in a for a in data["assumptions"]))
+        page = self.client.get(f"/api/v1/route-plans/{data['id']}/map/")
+        self.assertContains(page, "Starts with a full tank")
 
     def test_invalid_stop_penalty(self):
         resp = self.client.post(
@@ -207,7 +228,8 @@ class RoutePlanApiTests(TestCase):
         from rest_framework.settings import api_settings
         from rest_framework.throttling import AnonRateThrottle
 
-        with mock.patch.object(AnonRateThrottle, "THROTTLE_RATES", {**api_settings.DEFAULT_THROTTLE_RATES, "anon": "2/minute"}):
+        rates = {**api_settings.DEFAULT_THROTTLE_RATES, "anon": "2/minute"}
+        with mock.patch.object(AnonRateThrottle, "THROTTLE_RATES", rates):
             codes = [self.post().status_code for _ in range(3)]
         self.assertEqual(codes, [201, 201, 429])
 

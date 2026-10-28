@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from .models import RoutePlan
 from .serializers import RoutePlanRequestSerializer
-from .services.planner import PlanningError, build_plan
+from .services.planner import PlanningError, build_plan, with_map
 
 
 def _error(message: str, http_status: int, field: str | None = None) -> Response:
@@ -68,7 +68,7 @@ class RoutePlanView(APIView):
 class RoutePlanDetailView(APIView):
     def get(self, request, plan_id):
         plan = get_object_or_404(RoutePlan, pk=plan_id)
-        return Response(_with_absolute_map_url(request, plan.result))
+        return Response(_with_absolute_map_url(request, with_map(plan.result, plan.route_coordinates)))
 
 
 def route_plan_map(request, plan_id):

@@ -37,8 +37,12 @@
   <div class="muted">{{ plan.route.distance_miles }} mi &middot; {{ plan.route.duration_hours }} h driving</div>
   <div class="totals">
     <div>Total fuel cost<b>${{ plan.summary.total_fuel_cost|floatformat:2 }}</b></div>
-    <div>Fuel used<b>{{ plan.summary.total_gallons|floatformat:2 }} gal</b></div>
+    <div>Fuel bought<b>{{ plan.summary.total_gallons_purchased|floatformat:2 }} gal</b></div>
   </div>
+  {% if plan.summary.starting_fuel_gallons %}
+    <p class="muted">Starts with a full tank ({{ plan.summary.starting_fuel_gallons|floatformat:0 }} gal, not included):
+      no station is near the start.</p>
+  {% endif %}
   <strong>Fuel stops ({{ plan.summary.number_of_stops }})</strong>
   <ol>
     {% for stop in plan.fuel_stops %}

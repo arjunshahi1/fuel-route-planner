@@ -22,6 +22,7 @@ class FuelStation(models.Model):
     latitude = models.FloatField()
     longitude = models.FloatField()
     geocode_source = models.CharField(max_length=32, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, help_text="When this row was last loaded from the price file")
 
     class Meta:
         ordering = ["opis_id"]

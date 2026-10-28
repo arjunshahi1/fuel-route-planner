@@ -170,6 +170,34 @@
       }
     },
     {
+      "name": "Plan route - Houston to Dallas (no station near the start: full tank)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Houston, TX\",\n  \"finish\": \"Dallas, TX\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
       "name": "Get saved plan",
       "request": {
         "method": "GET",

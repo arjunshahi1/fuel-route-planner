@@ -98,9 +98,10 @@ class OptimizerBasicsTests(SimpleTestCase):
 
 
 class OptimizerInfeasibleTests(SimpleTestCase):
-    def test_no_station_near_the_start(self):
-        with self.assertRaisesMessage(InfeasibleRouteError, "within 25 miles of the start"):
-            plan([(60, 3.0)], route_miles=300)
+    def test_gap_after_a_full_tank_start_still_raises(self):
+        # No station near the start: begins with a full tank (500 mi), but 1200 mi needs more.
+        with self.assertRaisesMessage(InfeasibleRouteError, "stretch without a known fuel station"):
+            plan([(60, 3.0)], route_miles=1200)
 
     def test_gap_longer_than_range(self):
         with self.assertRaisesMessage(InfeasibleRouteError, "520-mile stretch"):
@@ -109,6 +110,55 @@ class OptimizerInfeasibleTests(SimpleTestCase):
     def test_destination_out_of_range_of_last_station(self):
         with self.assertRaisesMessage(InfeasibleRouteError, "stretch without a known fuel station"):
             plan([(0, 3.0), (400, 3.0)], route_miles=1000)
+
+
+class FullTankStartTests(SimpleTestCase):
+    """No station near the start (e.g. Houston, Los Angeles): start with a full, unpaid tank."""
+
+    def test_short_trip_needs_no_purchase(self):
+        result = plan([(60, 3.0)], route_miles=300)
+        self.assertEqual(result.purchases, [])
+        self.assertEqual(result.starting_fuel_gallons, TANK)
+
+    def test_long_trip_buys_only_what_the_full_tank_does_not_cover(self):
+        for penalty in (0, 5):
+            result = plan([(60, 3.0), (450, 2.5)], route_miles=700, stop_penalty=penalty)
+            self.assertAlmostEqual(result.total_gallons, (700 - 500) / MPG)  # 20 gal on top of the full tank
+            self.assertEqual(result.starting_fuel_gallons, TANK)
+            self.assertEqual(result.purchases[-1].station.price, 2.5)  # bought at the cheaper station
+
+    def test_full_tank_start_matches_lp(self):
+        # Equivalent LP: a free station at mile 0 selling up to one full tank.
+        rng = random.Random(11)
+        for _ in range(100):
+            route = rng.uniform(600, 2000)
+            miles = [rng.uniform(30, 450)]
+            while miles[-1] < route:
+                miles.append(miles[-1] + rng.uniform(1, 480))
+            stations = [(m, round(rng.uniform(2.6, 4.6), 3)) for m in miles if m <= route]
+            result = plan(stations, route, start_radius=25)
+            expected = lp_optimum([(0.0, 0.0)] + stations, route, start_index=0)
+            self.assertAlmostEqual(result.total_cost, expected, places=6)
+
+
+class DetourTests(SimpleTestCase):
+    def test_detour_fuel_is_bought_and_costed(self):
+        result = plan_fuel_stops(
+            [StationOption(0, 3.0, detour_miles=10)], route_miles=200, range_miles=RANGE, mpg=MPG,
+            start_radius_miles=25,
+        )
+        purchase = result.purchases[0]
+        self.assertAlmostEqual(purchase.detour_gallons, 1.0)
+        self.assertAlmostEqual(purchase.gallons, 21.0)
+        self.assertAlmostEqual(purchase.cost, 63.0)
+
+    def test_far_off_route_station_loses_to_a_slightly_pricier_on_route_one(self):
+        # 18 mi round trip at $3.00 = $5.40 of detour fuel, more than the 1 cent/gal saved on 40 gal.
+        result = plan_fuel_stops(
+            [StationOption(0, 3.10), StationOption(100, 3.01), StationOption(101, 3.00, detour_miles=18)],
+            route_miles=500, range_miles=RANGE, mpg=MPG, start_radius_miles=25,
+        )
+        self.assertNotIn(3.00, [p.station.price for p in result.purchases])
 
 
 class StopPenaltyTests(SimpleTestCase):
@@ -164,7 +214,9 @@ class StopPenaltyTests(SimpleTestCase):
             penalty = rng.choice([1.0, 5.0, 20.0])
 
             best = float("inf")
-            for mask in range(1, 1 << len(stations)):
+            # Every subset keeps the start station, so all candidates describe the same trip
+            # (without it the planner would start with a free full tank).
+            for mask in range(1, 1 << len(stations), 2):
                 subset = [s for k, s in enumerate(stations) if mask >> k & 1]
                 try:
                     candidate = plan(subset, route, start_radius=0)

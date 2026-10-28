@@ -2,11 +2,15 @@
 
 Trip model (documented in the README and in every API response):
 
-* The vehicle starts with an empty tank and fills up at a station near the
-  start: one within ``start_radius_miles`` along the route. The few miles
-  driven to reach it ("lead-in") are paid for at that station's price, so the
-  total fuel bought always equals ``route_miles / mpg``.
+* Normally the vehicle starts with an empty tank and fills up at a station
+  near the start, one within ``start_radius_miles`` along the route. The miles
+  driven to reach it ("lead-in") are paid for at that station's price.
+* If no station is that close (the price data has none in some large cities),
+  the vehicle starts with a full tank instead. That fuel is not part of the
+  trip's cost; the plan reports it as ``starting_fuel_gallons``.
 * The vehicle arrives at the destination with an empty tank.
+* Stations lie up to a few miles off the route. The round trip off the route
+  ("detour") burns fuel, which is bought at that station and added to its cost.
 
 Two algorithms work together:
 
@@ -18,13 +22,11 @@ Two algorithms work together:
    * otherwise, if the destination is reachable, buy just enough to finish;
    * otherwise fill the tank and continue to the cheapest station in range.
 
-   Minimum cost alone produces impractical plans, e.g. stopping for 0.2 gallons
-   because the next station is half a cent cheaper.
-
 2. ``_select_stops`` - a dynamic programme over (station, fuel level) that
-   minimises ``fuel cost + stop_penalty x number of stops``. It decides
+   minimises ``fuel cost + (stop_penalty + detour cost) per stop``. It decides
    *where* to stop; the greedy then computes the exact gallons using only
-   those stations. With ``stop_penalty=0`` the result equals the pure greedy.
+   those stations. A stop penalty avoids impractical plans such as stopping for
+   0.2 gallons because the next station is half a cent cheaper.
 
 Distances are in miles along the route. Fuel in the tank is tracked as
 "miles of range" to avoid repeated MPG conversions.
@@ -32,8 +34,9 @@ Distances are in miles along the route. Fuel in the tank is tracked as
 
 from __future__ import annotations
 
+import math
 from bisect import bisect_right
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -47,20 +50,23 @@ class StationOption:
     mile_marker: float
     price: float  # USD per gallon
     ref: Any = None  # caller's handle back to the station
+    detour_miles: float = 0.0  # extra miles to leave the route, reach the station and return
 
 
 @dataclass(frozen=True)
 class Purchase:
     station: StationOption
-    gallons: float  # total gallons paid for here (includes lead_in_gallons)
+    gallons: float  # total gallons paid for here (includes lead-in and detour fuel)
     cost: float
     fuel_on_arrival_gallons: float
     lead_in_gallons: float = 0.0  # first stop only: fuel used to drive from the start to here
+    detour_gallons: float = 0.0  # fuel for the round trip off the route to this station
 
 
 @dataclass
 class FuelPlan:
     purchases: list[Purchase] = field(default_factory=list)
+    starting_fuel_gallons: float = 0.0  # already in the tank at the start; not part of the cost
 
     @property
     def total_gallons(self) -> float:
@@ -93,39 +99,60 @@ def plan_fuel_stops(
         key=lambda s: (s.mile_marker, s.price),
     )
     start_limit = min(start_radius_miles, route_miles)
-    if not any(s.mile_marker <= start_limit + EPSILON for s in stops):
-        raise InfeasibleRouteError(
-            f"No fuel station within {start_limit:g} miles of the start along the route, "
-            "so the first fill-up cannot be made."
-        )
+    start_full = not any(s.mile_marker <= start_limit + EPSILON for s in stops)
 
-    if stop_penalty <= 0:
-        return _greedy(stops, route_miles, range_miles, mpg, start_limit)
+    def greedy(subset):
+        return _greedy(subset, route_miles, range_miles, mpg, start_limit, start_full)
 
-    chosen = _select_stops(stops, route_miles, range_miles, mpg, start_limit, stop_penalty)
-    if chosen is None:
-        # No feasible plan: let the greedy produce a precise error message.
-        return _greedy(stops, route_miles, range_miles, mpg, start_limit)
-    try:
-        return _greedy([stops[i] for i in chosen], route_miles, range_miles, mpg, start_limit)
-    except InfeasibleRouteError:
-        # Only possible through rounding at DP_RESOLUTION_MILES; fall back to the exact optimum.
-        return _greedy(stops, route_miles, range_miles, mpg, start_limit)
+    if not stops or (stop_penalty <= 0 and all(s.detour_miles <= 0 for s in stops)):
+        plan = greedy(stops)
+    else:
+        chosen = _select_stops(stops, route_miles, range_miles, mpg, start_limit, stop_penalty, start_full)
+        if chosen is None:
+            plan = greedy(stops)  # no feasible plan: the greedy raises a precise error
+        else:
+            try:
+                plan = greedy([stops[i] for i in chosen])
+            except InfeasibleRouteError:
+                # Only possible through rounding at DP_RESOLUTION_MILES; fall back to all stations.
+                plan = greedy(stops)
+
+    plan.purchases = [_with_detour(p, mpg) for p in plan.purchases]
+    if start_full:
+        plan.starting_fuel_gallons = range_miles / mpg
+    return plan
 
 
-def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_limit) -> FuelPlan:
-    start_options = [i for i, s in enumerate(stops) if s.mile_marker <= start_limit + EPSILON]
-    if not start_options:
-        raise InfeasibleRouteError("No fuel station near the start of the route.")
-    # Cheapest station near the start (ties: the farthest one). Starting at the
-    # cheapest is never worse: any plan starting elsewhere nearby can be matched
-    # at equal or lower cost by buying here and topping up later.
-    current = min(start_options, key=lambda i: (stops[i].price, -stops[i].mile_marker))
+def _with_detour(purchase: Purchase, mpg: float) -> Purchase:
+    extra = purchase.station.detour_miles / mpg
+    if extra <= 0:
+        return purchase
+    return replace(
+        purchase,
+        gallons=purchase.gallons + extra,
+        cost=purchase.cost + extra * purchase.station.price,
+        detour_gallons=extra,
+    )
+
+
+def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_limit, start_full) -> FuelPlan:
+    if start_full:
+        # A virtual, unbuyable station at the origin holding a full tank.
+        stops = [StationOption(0.0, math.inf)] + list(stops)
+        current, fuel, lead_in = 0, range_miles, 0.0
+    else:
+        start_options = [i for i, s in enumerate(stops) if s.mile_marker <= start_limit + EPSILON]
+        if not start_options:
+            raise InfeasibleRouteError("No fuel station near the start of the route.")
+        # Cheapest station near the start (ties: the farthest one). Starting at the
+        # cheapest is never worse: any plan starting elsewhere nearby can be matched
+        # at equal or lower cost by buying here and topping up later.
+        current = min(start_options, key=lambda i: (stops[i].price, -stops[i].mile_marker))
+        fuel = 0.0  # range in the tank on arrival at `current`, in miles
+        lead_in = stops[current].mile_marker  # miles driven before the first fill-up
 
     miles = [s.mile_marker for s in stops]
     purchases: list[Purchase] = []
-    fuel = 0.0  # range in the tank on arrival at `current`, in miles
-    lead_in = stops[current].mile_marker  # miles driven before the first fill-up
 
     while True:
         here = stops[current]
@@ -139,7 +166,7 @@ def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_lim
             target_miles, next_stop = route_miles - here.mile_marker, None
         else:
             if not in_range:
-                ahead = [s.mile_marker for s in stops[current + 1 :] if s.mile_marker > here.mile_marker]
+                ahead = [s.mile_marker for s in stops[current + 1:] if s.mile_marker > here.mile_marker]
                 gap = (ahead[0] if ahead else route_miles) - here.mile_marker
                 raise InfeasibleRouteError(
                     f"The route has a {gap:.0f}-mile stretch without a known fuel station after mile "
@@ -170,18 +197,20 @@ def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_lim
 
 
 def _select_stops(
-    stops: list[StationOption], route_miles, range_miles, mpg, start_limit, stop_penalty
+    stops: list[StationOption], route_miles, range_miles, mpg, start_limit, stop_penalty, start_full
 ) -> list[int] | None:
-    """Indices of the stations to stop at, minimising fuel cost + stop_penalty per stop.
+    """Indices of the stations to stop at, minimising fuel cost + per-stop costs.
 
     ``cost[f]`` is the cheapest way to be at the current station holding ``f``
     units of fuel (1 unit = DP_RESOLUTION_MILES of range). Per station:
 
-    * arrive: shift the previous station's array by the distance driven;
-    * start: a station near the start may begin the trip with an empty tank
-      (paying for the lead-in miles at its price);
-    * buy: ``cost'[g] = min(cost[g], min_{f<g} cost[f] + (g - f) * price + penalty)``,
-      a prefix minimum, so each station costs O(tank size) with numpy.
+    * arrive: shift the previous array by the distance driven;
+    * start: either the trip begins at the origin with a full tank, or a
+      station near the start may begin it with an empty tank (paying for the
+      lead-in miles at its price);
+    * buy: ``cost'[g] = min(cost[g], min_{f<g} cost[f] + (g - f) * price + stop_cost)``,
+      a prefix minimum, so each station costs O(tank size) with numpy. The stop
+      cost is ``stop_penalty`` plus the fuel for the station's detour.
 
     Returns None when no feasible plan exists.
     """
@@ -192,26 +221,30 @@ def _select_stops(
     infinity = np.full(size, np.inf)
 
     cost = infinity.copy()
+    if start_full:
+        cost[-1] = 0.0  # full tank at the origin, already paid for
+    previous_position = 0
     bought, came_from, started_here = [], [], []
     for i, station in enumerate(stops):
-        if i:
-            drive = positions[i] - positions[i - 1]
-            if drive:
-                cost = np.concatenate((cost[drive:], infinity[: min(drive, size)]))[:size]
+        drive = positions[i] - previous_position
+        if drive:
+            cost = np.concatenate((cost[drive:], infinity[: min(drive, size)]))[:size]
+        previous_position = positions[i]
 
         start_cost = station.mile_marker * station.price / mpg
-        starts = station.mile_marker <= start_limit + EPSILON and start_cost < cost[0]
+        starts = not start_full and station.mile_marker <= start_limit + EPSILON and start_cost < cost[0]
         if starts:
             cost[0] = start_cost
         started_here.append(starts)
 
         unit_price = station.price * res / mpg
+        stop_cost = stop_penalty + station.detour_miles * station.price / mpg
         shifted = cost - levels * unit_price
         running_min = np.minimum.accumulate(shifted)
         running_arg = np.maximum.accumulate(np.where(shifted <= running_min, levels, -1))
         best_before = np.concatenate(([np.inf], running_min[:-1]))  # min over f < g
         best_before_arg = np.concatenate(([-1], running_arg[:-1]))
-        with_purchase = best_before + levels * unit_price + stop_penalty
+        with_purchase = best_before + levels * unit_price + stop_cost
         take = with_purchase < cost
         cost = np.where(take, with_purchase, cost)
         bought.append(take)
