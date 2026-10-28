@@ -1,0 +1,268 @@
+{
+  "info": {
+    "name": "Fuel Route Planner",
+    "description": "Requests for the Fuel Route Planner API. Run the server with `python manage.py runserver` and set `baseUrl` if needed.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "plan_id",
+      "value": ""
+    }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if ([200, 201].includes(pm.response.code) && pm.response.headers.get('Content-Type', '').includes('json')) {",
+          "  const body = pm.response.json();",
+          "  if (body.id) { pm.collectionVariables.set('plan_id', body.id); }",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Plan route - Chicago to Denver",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Chicago, IL\",\n  \"finish\": \"Denver, CO\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Plan route - New York to Los Angeles (coast to coast)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"New York, NY\",\n  \"finish\": \"Los Angeles, CA\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Plan route - cheapest possible (stop_penalty 0)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"New York, NY\",\n  \"finish\": \"Los Angeles, CA\",\n  \"stop_penalty\": 0\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Plan route - coordinates",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": {\"lat\": 32.7767, \"lng\": -96.7970},\n  \"finish\": \"33.7490,-84.3880\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Plan route - street address (1 geocoding call)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"1600 Pennsylvania Avenue NW, Washington DC\",\n  \"finish\": \"Nashville, TN\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get saved plan",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/{{plan_id}}/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            "{{plan_id}}",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Map page (open in browser)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/{{plan_id}}/map/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            "{{plan_id}}",
+            "map",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Error - no fuel stations for 991 miles (422)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Portland, OR\",\n  \"finish\": \"San Diego, CA\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    },
+    {
+      "name": "Error - outside the USA (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Toronto, ON\",\n  \"finish\": \"Chicago, IL\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route-plans/",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route-plans",
+            ""
+          ]
+        }
+      }
+    }
+  ]
+}
