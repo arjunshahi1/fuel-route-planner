@@ -148,9 +148,49 @@ class DetourTests(SimpleTestCase):
             start_radius_miles=25,
         )
         purchase = result.purchases[0]
-        self.assertAlmostEqual(purchase.detour_gallons, 1.0)
+        # First fill-up: the 5 mi out to the pump is lead-in, the 5 mi back is the detour.
+        self.assertAlmostEqual(purchase.lead_in_gallons, 0.5)
+        self.assertAlmostEqual(purchase.detour_gallons, 0.5)
         self.assertAlmostEqual(purchase.gallons, 21.0)
         self.assertAlmostEqual(purchase.cost, 63.0)
+
+    def test_must_arrive_with_fuel_to_reach_an_off_route_pump(self):
+        # On a full tank from mile 0 the vehicle reaches mile 500 empty, so it can't leave
+        # the route for the 5-mile drive to the cheap pump there; it stops at mile 480 first.
+        stations = [StationOption(0, 3.0), StationOption(480, 3.5), StationOption(500, 2.0, detour_miles=10)]
+        result = plan_fuel_stops(stations, route_miles=900, range_miles=RANGE, mpg=MPG, start_radius_miles=25)
+        cheap = result.purchases[-1]
+        self.assertEqual(cheap.station.mile_marker, 500)
+        self.assertAlmostEqual(cheap.fuel_on_arrival_gallons, 0.0)  # at the pump, after the 5 mi out
+        self.assertAlmostEqual(result.total_gallons, 90 + 1)  # 900 mi plus one 10 mi round trip
+        self.assertIn(480, [p.station.mile_marker for p in result.purchases])
+
+    def test_tank_capacity_holds_with_detours(self):
+        rng = random.Random(5)
+        for penalty in (0, 5):
+            for _ in range(150):
+                route = rng.uniform(300, 2500)
+                miles = [rng.uniform(0, 20)]
+                while miles[-1] < route:
+                    miles.append(miles[-1] + rng.uniform(1, 300))
+                stations = [
+                    StationOption(m, round(rng.uniform(2.6, 4.6), 3), detour_miles=rng.choice([0, rng.uniform(0, 20)]))
+                    for m in miles
+                    if m <= route
+                ]
+                try:
+                    result = plan_fuel_stops(
+                        stations, route_miles=route, range_miles=RANGE, mpg=MPG, start_radius_miles=25,
+                        stop_penalty=penalty,
+                    )
+                except InfeasibleRouteError:
+                    continue
+                for p in result.purchases:
+                    self.assertGreaterEqual(p.fuel_on_arrival_gallons, 0.0)
+                    in_tank = p.fuel_on_arrival_gallons + p.gallons - p.lead_in_gallons
+                    self.assertLessEqual(in_tank, TANK + 1e-6)
+                detours = sum(p.station.detour_miles for p in result.purchases)
+                self.assertAlmostEqual(result.total_gallons, (route + detours) / MPG, places=6)
 
     def test_far_off_route_station_loses_to_a_slightly_pricier_on_route_one(self):
         # 18 mi round trip at $3.00 = $5.40 of detour fuel, more than the 1 cent/gal saved on 40 gal.

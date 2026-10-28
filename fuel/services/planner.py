@@ -104,7 +104,8 @@ def build_plan(start_input, finish_input, stop_penalty: float | None = None) -> 
             "starting_fuel_gallons": round(fuel_plan.starting_fuel_gallons, 2),
             # Burned on the trip: driving distance plus detours to the stations used.
             "fuel_used_gallons": round(
-                route.distance_miles / cfg["VEHICLE_MPG"] + sum(p.detour_gallons for p in fuel_plan.purchases), 2
+                (route.distance_miles + sum(p.station.detour_miles for p in fuel_plan.purchases)) / cfg["VEHICLE_MPG"],
+                2,
             ),
             "number_of_stops": len(stops),
             "average_price_per_gallon": (

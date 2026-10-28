@@ -5,3 +5,4 @@ scipy==1.18.1
 requests==2.34.2
 python-dotenv==1.2.4
 gunicorn==26.2.0
+flake8==7.4.1

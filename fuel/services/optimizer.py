@@ -11,6 +11,9 @@ Trip model (documented in the README and in every API response):
 * The vehicle arrives at the destination with an empty tank.
 * Stations lie up to a few miles off the route. The round trip off the route
   ("detour") burns fuel, which is bought at that station and added to its cost.
+  The vehicle must reach the station with that fuel in the tank, and the tank
+  must also hold the drive back, so a full tank leaves less range on the route.
+  On the first fill-up the drive to the pump is part of the lead-in.
 
 Two algorithms work together:
 
@@ -36,7 +39,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_right
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -117,29 +120,16 @@ def plan_fuel_stops(
                 # Only possible through rounding at DP_RESOLUTION_MILES; fall back to all stations.
                 plan = greedy(stops)
 
-    plan.purchases = [_with_detour(p, mpg) for p in plan.purchases]
     if start_full:
         plan.starting_fuel_gallons = range_miles / mpg
     return plan
-
-
-def _with_detour(purchase: Purchase, mpg: float) -> Purchase:
-    extra = purchase.station.detour_miles / mpg
-    if extra <= 0:
-        return purchase
-    return replace(
-        purchase,
-        gallons=purchase.gallons + extra,
-        cost=purchase.cost + extra * purchase.station.price,
-        detour_gallons=extra,
-    )
 
 
 def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_limit, start_full) -> FuelPlan:
     if start_full:
         # A virtual, unbuyable station at the origin holding a full tank.
         stops = [StationOption(0.0, math.inf)] + list(stops)
-        current, fuel, lead_in = 0, range_miles, 0.0
+        current, fuel, at_start = 0, range_miles, False
     else:
         start_options = [i for i, s in enumerate(stops) if s.mile_marker <= start_limit + EPSILON]
         if not start_options:
@@ -148,20 +138,28 @@ def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_lim
         # cheapest is never worse: any plan starting elsewhere nearby can be matched
         # at equal or lower cost by buying here and topping up later.
         current = min(start_options, key=lambda i: (stops[i].price, -stops[i].mile_marker))
-        fuel = 0.0  # range in the tank on arrival at `current`, in miles
-        lead_in = stops[current].mile_marker  # miles driven before the first fill-up
+        fuel = 0.0  # range in the tank on arrival at `current`'s route point, in miles
+        at_start = True  # the first fill-up: the miles driven to reach it are the lead-in
 
     miles = [s.mile_marker for s in stops]
     purchases: list[Purchase] = []
 
     while True:
         here = stops[current]
-        reach = here.mile_marker + range_miles
-        in_range = range(current + 1, bisect_right(miles, reach + EPSILON))
+        off = here.detour_miles / 2  # one way, between the route and the pump
+        cap = range_miles - off  # most range left on rejoining the route after filling here
+        reach = here.mile_marker + cap
+        in_range = [
+            j
+            for j in range(current + 1, bisect_right(miles, reach + EPSILON))
+            if stops[j].mile_marker - here.mile_marker + stops[j].detour_miles / 2 <= cap + EPSILON
+        ]
 
         cheaper = next((j for j in in_range if stops[j].price < here.price - EPSILON), None)
         if cheaper is not None:
-            target_miles, next_stop = stops[cheaper].mile_marker - here.mile_marker, cheaper
+            # Arrive with enough fuel to drive off the route to its pump.
+            target_miles = stops[cheaper].mile_marker - here.mile_marker + stops[cheaper].detour_miles / 2
+            next_stop = cheaper
         elif route_miles <= reach + EPSILON:
             target_miles, next_stop = route_miles - here.mile_marker, None
         else:
@@ -173,21 +171,26 @@ def _greedy(stops: list[StationOption], route_miles, range_miles, mpg, start_lim
                     f"{here.mile_marker:.0f}, which exceeds the vehicle's {range_miles:g}-mile range."
                 )
             next_stop = min(in_range, key=lambda j: (stops[j].price, -stops[j].mile_marker))
-            target_miles = range_miles  # fill the tank
+            target_miles = cap  # fill the tank
 
-        buy_miles = max(0.0, target_miles - fuel) + lead_in
-        if buy_miles > EPSILON:
-            gallons = buy_miles / mpg
+        if at_start:
+            lead_in, detour, at_pump = here.mile_marker + off, off, 0.0
+        else:
+            lead_in, detour, at_pump = 0.0, 2 * off, max(fuel - off, 0.0)
+        top_up = max(0.0, target_miles - fuel)
+        if top_up + lead_in > EPSILON:  # no purchase means no detour
+            gallons = (top_up + lead_in + detour) / mpg
             purchases.append(
                 Purchase(
                     station=here,
                     gallons=gallons,
                     cost=gallons * here.price,
-                    fuel_on_arrival_gallons=fuel / mpg,
+                    fuel_on_arrival_gallons=at_pump / mpg,
                     lead_in_gallons=lead_in / mpg,
+                    detour_gallons=detour / mpg,
                 )
             )
-        lead_in = 0.0
+        at_start = False
         fuel = max(fuel, target_miles)
 
         if next_stop is None:
@@ -239,12 +242,20 @@ def _select_stops(
 
         unit_price = station.price * res / mpg
         stop_cost = stop_penalty + station.detour_miles * station.price / mpg
+        off_units = math.ceil(station.detour_miles / 2 / res - EPSILON)  # one way to the pump
         shifted = cost - levels * unit_price
+        if off_units > 0:
+            # Buying needs the fuel to reach the pump, except on the first fill-up (its lead-in covers it).
+            blocked = levels < off_units
+            blocked[0] = blocked[0] and not starts
+            shifted = np.where(blocked, np.inf, shifted)
         running_min = np.minimum.accumulate(shifted)
         running_arg = np.maximum.accumulate(np.where(shifted <= running_min, levels, -1))
         best_before = np.concatenate(([np.inf], running_min[:-1]))  # min over f < g
         best_before_arg = np.concatenate(([-1], running_arg[:-1]))
         with_purchase = best_before + levels * unit_price + stop_cost
+        if off_units > 0:
+            with_purchase[size - off_units:] = np.inf  # the tank must also hold the drive back to the route
         take = with_purchase < cost
         cost = np.where(take, with_purchase, cost)
         bought.append(take)

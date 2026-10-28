@@ -60,8 +60,10 @@ class RoutePlanApiTests(TestCase):
 
         self.assertEqual(data["route"]["distance_miles"], round(ROUTE_MILES, 1))
         self.assertEqual(data["summary"]["number_of_stops"], len(data["fuel_stops"]))
-        detour = sum(s["detour_gallons"] for s in data["fuel_stops"])
-        self.assertAlmostEqual(data["summary"]["total_gallons_purchased"], ROUTE_MILES / 10 + detour, places=2)
+        self.assertAlmostEqual(
+            data["summary"]["total_gallons_purchased"], data["summary"]["fuel_used_gallons"], places=2
+        )
+        self.assertGreaterEqual(data["summary"]["fuel_used_gallons"], round(ROUTE_MILES / 10, 2))
         self.assertEqual(data["summary"]["starting_fuel_gallons"], 0)
         self.assertAlmostEqual(
             data["summary"]["total_fuel_cost"], round(sum(s["cost"] for s in data["fuel_stops"]), 2), places=2
@@ -72,7 +74,9 @@ class RoutePlanApiTests(TestCase):
         self.assertNotIn("STATION 5", names)  # off-route station is never used
         for stop in data["fuel_stops"]:
             self.assertAlmostEqual(stop["cost"], stop["gallons_purchased"] * stop["price_per_gallon"], delta=0.01)
-            self.assertLessEqual(stop["fuel_on_arrival_gallons"] + stop["gallons_purchased"], 50 + 1)
+            # What goes into the tank (lead-in fuel was burned before the pump) fits a 50-gallon tank.
+            in_tank = stop["fuel_on_arrival_gallons"] + stop["gallons_purchased"] - stop["lead_in_gallons"]
+            self.assertLessEqual(in_tank, 50 + 0.01)
 
         self.assertTrue(data["map_url"].startswith("http://testserver/api/v1/route-plans/"))
         kinds = [f["properties"]["kind"] for f in data["map"]["features"]]

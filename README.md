@@ -10,7 +10,7 @@ Fuel prices come from an OPIS truck-stop price file (`data/fuel-prices.csv`). Ro
 
 ```
 POST /api/v1/route-plans/   {"start": "Chicago, IL", "finish": "Denver, CO"}
-→ 3 fuel stops, $297.36 total, 1002.7 miles, interactive map link
+→ 3 fuel stops, $297.45 total, 1002.7 miles, interactive map link
 ```
 
 ---
@@ -71,12 +71,12 @@ A successful request returns **`201 Created`**: the plan is saved, and the `Loca
   "route":   {"distance_miles": 1002.7, "duration_hours": 17.79, "provider": "osrm"},
   "vehicle": {"range_miles": 500.0, "mpg": 10.0, "tank_capacity_gallons": 50.0},
   "summary": {
-    "total_fuel_cost": 297.36,
+    "total_fuel_cost": 297.45,
     "total_gallons_purchased": 101.63,
     "starting_fuel_gallons": 0.0,
     "fuel_used_gallons": 101.63,
     "number_of_stops": 3,
-    "average_price_per_gallon": 2.926,
+    "average_price_per_gallon": 2.927,
     "stations_in_corridor": 202,
     "stop_penalty": 5.0
   },
@@ -85,11 +85,11 @@ A successful request returns **`201 Created`**: the plan is saved, and the `Loca
       "stop_number": 1, "opis_id": 72438, "name": "QUIKTRIP #7208", "address": "I-290 EXIT 18A",
       "city": "Bellwood", "state": "IL", "lat": 41.8829, "lng": -87.87617,
       "mile_marker": 12.8, "off_route_miles": 0.8, "price_per_gallon": 3.079,
-      "fuel_on_arrival_gallons": 0.0, "gallons_purchased": 32.393,
-      "lead_in_gallons": 1.285, "detour_gallons": 0.167, "cost": 99.74
+      "fuel_on_arrival_gallons": 0.0, "gallons_purchased": 32.473,
+      "lead_in_gallons": 1.368, "detour_gallons": 0.083, "cost": 99.99
     }
   ],
-  "cheapest_possible": {"total_fuel_cost": 297.15, "number_of_stops": 4, "fuel_stops": ["..."]},
+  "cheapest_possible": {"total_fuel_cost": 297.23, "number_of_stops": 4, "fuel_stops": ["..."]},
   "map_url": "http://127.0.0.1:8000/api/v1/route-plans/7d04e6e2-.../map/",
   "map": {"type": "FeatureCollection", "features": ["route LineString, start, finish, one Point per stop"]},
   "assumptions": ["..."],
@@ -192,7 +192,7 @@ The vehicle has a 500-mile range at 10 MPG, so a 50-gallon tank.
 The test suite checks this greedy against an independent **linear-programming solver** (`scipy.optimize.linprog`) on 400 random routes, and it matches to 6 decimal places.
 
 **Real-world costs of a stop.** Two things make the pure minimum impractical, so each stop carries a cost:
-- **Detours.** A station can be up to 10 miles off the route. The fuel for the round trip (`detour_gallons`, 2 × `off_route_miles` ÷ MPG) is bought at that station and counted in its cost, so a station 9 miles away that is 1¢ cheaper doesn't beat one on the route.
+- **Detours.** A station can be up to 10 miles off the route. The fuel for the round trip (`detour_gallons`, 2 × `off_route_miles` ÷ MPG) is bought at that station and counted in its cost, so a station 9 miles away that is 1¢ cheaper doesn't beat one on the route. The vehicle must reach the station with enough fuel for the drive out, and the tank must also hold the drive back, so filling up off the route leaves less than 500 miles of range.
 - **Stop penalty.** Without it, plans include stops that save cents, such as buying 0.2 gallons because the next station is half a cent cheaper. The planner minimizes **fuel cost + detour fuel + `stop_penalty` per stop** (default $5).
 
 This uses a dynamic program over (station, fuel level) at 0.1-mile resolution:
@@ -203,10 +203,10 @@ The test suite checks the DP against a **brute-force search over every subset of
 
 | Route | Cheapest possible | Default (`stop_penalty=5`) |
 |---|---|---|
-| Chicago → Denver (1,003 mi) | 4 stops, $297.15 | 3 stops, $297.36 |
-| New York → Los Angeles (2,810 mi) | 10 stops, $866.19 | 7 stops, $871.42 |
-| Seattle → Miami (3,303 mi) | 14 stops, $1,034.92 | 9 stops, $1,040.37 |
-| Boston → Washington DC (439 mi) | 4 stops, $149.96 | 3 stops, $151.30 |
+| Chicago → Denver (1,003 mi) | 4 stops, $297.23 | 3 stops, $297.45 |
+| New York → Los Angeles (2,810 mi) | 10 stops, $866.41 | 7 stops, $871.73 |
+| Seattle → Miami (3,303 mi) | 14 stops, $1,035.09 | 9 stops, $1,040.58 |
+| Boston → Washington DC (439 mi) | 4 stops, $150.07 | 3 stops, $151.47 |
 
 Pass `"stop_penalty": 0` to get the cheapest plan as the main result.
 
@@ -233,7 +233,7 @@ Every response also lists these in its `assumptions` field.
 - **Start without a nearby station:** the price data has no stations in some large cities (Houston, Los Angeles, San Francisco). The vehicle then starts with a **full tank**, which is not part of the cost (`starting_fuel_gallons`). Houston → Dallas (238 mi) therefore needs no purchase and costs $0.
 - **Finish:** the vehicle arrives with an empty tank. Total cost is the sum of what is paid at each stop.
 - **Stops:** a stop is only made when it saves more than `stop_penalty`. `cheapest_possible` shows the alternative.
-- **Detours:** the fuel to reach a station off the route and return is included (`detour_gallons`).
+- **Detours:** the fuel to reach a station off the route and return is included (`detour_gallons`). On the first stop the drive out to the pump is part of `lead_in_gallons`, and `detour_gallons` is the drive back. At every stop, `fuel_on_arrival_gallons` (measured at the pump) plus `gallons_purchased` minus `lead_in_gallons` is at most the 50-gallon tank.
 - **Station locations:** approximated by their city, so `off_route_miles` and detours are approximate.
 - **Duplicate prices:** stations listed several times use their lowest price.
 - **Coverage:** the contiguous USA only. Canadian rows in the file are ignored, and the price data has no stations in Alaska or Hawaii.
