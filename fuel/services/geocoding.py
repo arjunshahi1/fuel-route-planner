@@ -181,4 +181,3 @@ def nearest_us_place(lat: float, lng: float) -> tuple[Place, float]:
     tree, places = _place_tree()
     chord, idx = tree.query(to_unit_vectors([lat], [lng])[0], k=1)
     return places[int(idx)], float(chord_to_miles(chord))
-

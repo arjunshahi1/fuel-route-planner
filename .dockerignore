@@ -1,0 +1,10 @@
+.git
+.venv
+.cache
+.env
+db.sqlite3
+data/raw
+postman
+**/__pycache__
+**/*.pyc
+.DS_Store

@@ -10,18 +10,26 @@ Fuel prices come from an OPIS truck-stop price file (`data/fuel-prices.csv`). Ro
 
 ```
 POST /api/v1/route-plans/   {"start": "Chicago, IL", "finish": "Denver, CO"}
-→ 3 fuel stops, $292.46 total, 1002.7 miles, interactive map link
+→ 3 fuel stops, $297.36 total, 1002.7 miles, interactive map link
 ```
 
 ---
 
 ## Quick start
 
-Requires Python 3.12+ (Django 6.1).
+**With Docker** (no Python needed):
+
+```bash
+docker build -t fuel-route-planner .
+docker run -p 8000:8000 fuel-route-planner
+```
+
+**Without Docker** (Python 3.12+, required by Django 6.1):
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env                  # optional: enables DEBUG for local development
 python manage.py migrate
 python manage.py load_fuel_stations   # loads 6,626 geocoded US stations (~2 s)
 python manage.py runserver
@@ -29,12 +37,15 @@ python manage.py runserver
 
 Then open http://127.0.0.1:8000/api/v1/ or import `postman/fuel-route-planner.postman_collection.json` into Postman.
 
+After re-running `load_fuel_stations` (for example with a newer price file), restart the server: each server process keeps the stations in memory.
+
 No API key is needed. The default router is the public [OSRM](https://project-osrm.org/) server. To use [OpenRouteService](https://openrouteservice.org/) instead, copy `.env.example` to `.env` and set `ORS_API_KEY`.
 
-Run the tests with:
+Run the tests and the linter with:
 
 ```bash
 python manage.py test fuel
+flake8   # configured in .flake8 (120-character lines)
 ```
 
 ---
@@ -60,23 +71,25 @@ A successful request returns **`201 Created`**: the plan is saved, and the `Loca
   "route":   {"distance_miles": 1002.7, "duration_hours": 17.79, "provider": "osrm"},
   "vehicle": {"range_miles": 500.0, "mpg": 10.0, "tank_capacity_gallons": 50.0},
   "summary": {
-    "total_fuel_cost": 292.46,
-    "total_gallons": 100.27,
+    "total_fuel_cost": 297.36,
+    "total_gallons_purchased": 101.63,
+    "starting_fuel_gallons": 0.0,
+    "fuel_used_gallons": 101.63,
     "number_of_stops": 3,
-    "average_price_per_gallon": 2.917,
+    "average_price_per_gallon": 2.926,
     "stations_in_corridor": 202,
-    "stop_penalty": 5.0,
-    "cheapest_possible": {"total_fuel_cost": 291.58, "number_of_stops": 7}
+    "stop_penalty": 5.0
   },
   "fuel_stops": [
     {
-      "stop_number": 1, "opis_id": 70180, "name": "Gulf", "address": "SR-83",
-      "city": "Bensenville", "state": "IL", "lat": 41.95801, "lng": -87.94383,
-      "mile_marker": 14.6, "off_route_miles": 6.1, "price_per_gallon": 3.059,
-      "fuel_on_arrival_gallons": 0.0, "gallons_purchased": 20.254, "lead_in_gallons": 1.459,
-      "cost": 61.96
+      "stop_number": 1, "opis_id": 72438, "name": "QUIKTRIP #7208", "address": "I-290 EXIT 18A",
+      "city": "Bellwood", "state": "IL", "lat": 41.8829, "lng": -87.87617,
+      "mile_marker": 12.8, "off_route_miles": 0.8, "price_per_gallon": 3.079,
+      "fuel_on_arrival_gallons": 0.0, "gallons_purchased": 32.393,
+      "lead_in_gallons": 1.285, "detour_gallons": 0.167, "cost": 99.74
     }
   ],
+  "cheapest_possible": {"total_fuel_cost": 297.15, "number_of_stops": 4, "fuel_stops": ["..."]},
   "map_url": "http://127.0.0.1:8000/api/v1/route-plans/7d04e6e2-.../map/",
   "map": {"type": "FeatureCollection", "features": ["route LineString, start, finish, one Point per stop"]},
   "assumptions": ["..."],
@@ -86,7 +99,8 @@ A successful request returns **`201 Created`**: the plan is saved, and the `Loca
 
 - `map_url` is an interactive Leaflet/OpenStreetMap page showing the route, the numbered fuel stops, and a cost summary. It's built from the stored plan, so opening it never calls the routing API.
 - `map` is the same content as GeoJSON. You can paste it into [geojson.io](https://geojson.io).
-- `summary.cheapest_possible` shows what the absolute cheapest plan would cost and how many stops it would take, so the stop-count trade-off is visible.
+- `cheapest_possible` is the absolute cheapest plan (no stop penalty), with its own `fuel_stops`, so the trade-off between cost and number of stops is visible.
+- `total_gallons_purchased` is what is paid for. `fuel_used_gallons` is what the trip burns (distance ÷ MPG plus detours); the two differ only when the trip starts with a full tank (`starting_fuel_gallons`, see Assumptions).
 
 ### Other endpoints
 
@@ -104,7 +118,7 @@ API errors have the shape `{"error": {"message": "...", "field": "start"}}`. The
 |---|---|
 | 400 | Missing or invalid input, a location outside the contiguous USA (`"Toronto, ON"`, `"Anchorage, AK"`), or an unknown place |
 | 405 | GET, PUT, PATCH or DELETE on `/api/v1/route-plans/` (only POST and OPTIONS are allowed) |
-| 422 | No drivable route, or the route has a stretch longer than 500 miles with no known station. For example, Portland → San Diego: the data has almost no California stations |
+| 422 | No drivable route, or the route has a stretch longer than 500 miles with no known station. For example, Portland → San Diego (991 miles without a station: the data has almost no California stations) |
 | 429 | Rate limit exceeded |
 | 500 | Misconfiguration, e.g. `ROUTING_PROVIDER=ors` without `ORS_API_KEY` |
 | 502/504 | The routing provider failed or timed out |
@@ -177,7 +191,11 @@ The vehicle has a 500-mile range at 10 MPG, so a 50-gallon tank.
 
 The test suite checks this greedy against an independent **linear-programming solver** (`scipy.optimize.linprog`) on 400 random routes, and it matches to 6 decimal places.
 
-**A practical plan.** The pure minimum is often impractical. Coast to coast it makes 17 stops, some only 13 miles apart to buy 1–2 gallons for a few cents of savings. So the planner minimizes **fuel cost + `stop_penalty` per stop** (default $5) with a dynamic program over (station, fuel level) at 0.1-mile resolution:
+**Real-world costs of a stop.** Two things make the pure minimum impractical, so each stop carries a cost:
+- **Detours.** A station can be up to 10 miles off the route. The fuel for the round trip (`detour_gallons`, 2 × `off_route_miles` ÷ MPG) is bought at that station and counted in its cost, so a station 9 miles away that is 1¢ cheaper doesn't beat one on the route.
+- **Stop penalty.** Without it, plans include stops that save cents, such as buying 0.2 gallons because the next station is half a cent cheaper. The planner minimizes **fuel cost + detour fuel + `stop_penalty` per stop** (default $5).
+
+This uses a dynamic program over (station, fuel level) at 0.1-mile resolution:
 - the DP decides **where** to stop;
 - the exact greedy then computes **how many gallons** to buy, using only those stations.
 
@@ -185,12 +203,12 @@ The test suite checks the DP against a **brute-force search over every subset of
 
 | Route | Cheapest possible | Default (`stop_penalty=5`) |
 |---|---|---|
-| Chicago → Denver (1,003 mi) | 7 stops, $291.58 | 3 stops, $292.46 |
-| New York → Los Angeles (2,810 mi) | 17 stops, $852.48 | 7 stops, $860.16 |
-| Seattle → Miami (3,303 mi) | 20 stops, $1,026.91 | 9 stops, $1,033.88 |
-| Boston → Washington DC (439 mi) | 8 stops, $146.37 | 3 stops, $148.76 |
+| Chicago → Denver (1,003 mi) | 4 stops, $297.15 | 3 stops, $297.36 |
+| New York → Los Angeles (2,810 mi) | 10 stops, $866.19 | 7 stops, $871.42 |
+| Seattle → Miami (3,303 mi) | 14 stops, $1,034.92 | 9 stops, $1,040.37 |
+| Boston → Washington DC (439 mi) | 4 stops, $149.96 | 3 stops, $151.30 |
 
-Pass `"stop_penalty": 0` for the absolute cheapest plan.
+Pass `"stop_penalty": 0` to get the cheapest plan as the main result.
 
 ### Performance
 
@@ -199,8 +217,10 @@ Measured locally against the public OSRM server:
 | | Time |
 |---|---|
 | First request for a trip (one OSRM call) | ~1–3 s, almost all of it waiting on the public OSRM server |
-| Our own processing (corridor + optimization + response) | ~20–40 ms |
-| Repeat request (cached route) | ~20–50 ms |
+| Our own processing (corridor + both plans + response) | ~30–90 ms |
+| Repeat request (cached route) | ~40–90 ms |
+
+The first request after a server starts also loads the station index into memory (~0.3 s, once per process).
 
 ---
 
@@ -210,9 +230,11 @@ Every response also lists these in its `assumptions` field.
 
 - **Vehicle:** 500-mile range, 10 MPG, so a 50-gallon tank.
 - **Start:** the trip starts with an **empty tank**. The first fill-up is at a station within 25 miles of the start along the route. The fuel used to drive there is charged at that station's price and reported as `lead_in_gallons`.
-- **Finish:** the vehicle arrives with an empty tank, so total gallons always equals distance ÷ MPG. Total cost is the sum of what is paid at each stop.
-- **Stops:** a stop is only made when it saves more than `stop_penalty`. `summary.cheapest_possible` shows the alternative.
-- **Station locations:** approximated by their city. `off_route_miles` is therefore approximate, and the detour to reach a station isn't added to fuel use.
+- **Start without a nearby station:** the price data has no stations in some large cities (Houston, Los Angeles, San Francisco). The vehicle then starts with a **full tank**, which is not part of the cost (`starting_fuel_gallons`). Houston → Dallas (238 mi) therefore needs no purchase and costs $0.
+- **Finish:** the vehicle arrives with an empty tank. Total cost is the sum of what is paid at each stop.
+- **Stops:** a stop is only made when it saves more than `stop_penalty`. `cheapest_possible` shows the alternative.
+- **Detours:** the fuel to reach a station off the route and return is included (`detour_gallons`).
+- **Station locations:** approximated by their city, so `off_route_miles` and detours are approximate.
 - **Duplicate prices:** stations listed several times use their lowest price.
 - **Coverage:** the contiguous USA only. Canadian rows in the file are ignored, and the price data has no stations in Alaska or Hawaii.
 
@@ -221,7 +243,9 @@ Every response also lists these in its `assumptions` field.
 - The public OSRM server is a free demo service with a fair-use policy. For production, use OpenRouteService with a key, or a self-hosted OSRM.
 - City-level geocoding is accurate enough for route planning, but not for turn-by-turn directions to a pump.
 - The price file barely covers California: it has a handful of stations near the Mexican border. Routes inside California may correctly return 422.
-- Plans are stored in SQLite; routes, geocoded addresses and rate-limit counters are kept in each process's memory. A multi-process deployment would use Postgres and a shared cache such as Redis.
+- Plans are stored in SQLite. Routes, geocoded addresses and rate-limit counters are kept in a file cache (`.cache/`), which survives restarts and is shared by the processes on one machine. A deployment across several machines would use Postgres and a shared cache such as Redis.
+- `DEBUG` is off unless `DJANGO_DEBUG=true` is set (`.env.example` sets it for local development). A real deployment must also set `DJANGO_SECRET_KEY`.
+- Stations are kept in each server process's memory, so a server needs a restart after `load_fuel_stations` runs.
 
 ---
 
@@ -245,10 +269,11 @@ fuel/
     build_geocodes.py           offline geocoding (run once; output committed)
     load_fuel_stations.py       CSV → database
   templates/fuel/map.html       Leaflet map
-  tests/                        64 tests: optimizer vs LP and brute force, API, loader, geo
+  tests/                        70 tests: optimizer vs LP and brute force, API, loader, geo
 data/
   fuel-prices.csv               OPIS station price file
   station_geocodes.csv          generated coordinates per station
   us_places.csv                 generated gazetteer for resolving input
 postman/                        Postman collection
+Dockerfile                      gunicorn image with the stations pre-loaded
 ```

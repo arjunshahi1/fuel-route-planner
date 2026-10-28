@@ -78,7 +78,11 @@ class Resolution:
 
 
 def strip_census_suffix(name: str) -> str:
-    """'Abbeville city' -> 'Abbeville', 'Nashville-Davidson metropolitan government (balance)' -> 'Nashville-Davidson'."""
+    """Drop the Census type suffix from a place name.
+
+    'Abbeville city' -> 'Abbeville';
+    'Nashville-Davidson metropolitan government (balance)' -> 'Nashville-Davidson'.
+    """
     name = re.sub(r"\s*\(balance\)$", "", name.strip())
     while True:
         match = re.search(r"\s+(CDP|CCD|UT|[a-z][a-z/\-]*)$", name)
@@ -134,7 +138,9 @@ class Command(BaseCommand):
                     continue
                 name = strip_census_suffix(rec["NAME"])
                 index[(rec["USPS"], name_key(name))].append(
-                    Candidate(source, name, float(rec["INTPTLAT"]), float(rec["INTPTLONG"]), float(rec["ALAND_SQMI"] or 0))
+                    Candidate(
+                        source, name, float(rec["INTPTLAT"]), float(rec["INTPTLONG"]), float(rec["ALAND_SQMI"] or 0)
+                    )
                 )
         return index
 
@@ -179,8 +185,12 @@ class Command(BaseCommand):
     def handle(self, *args, **opts):
         raw_dir = Path(opts["raw_dir"])
         year = opts["census_year"]
-        place_zip = self._download(CENSUS_URL.format(year=year, kind="place"), raw_dir / f"{year}_Gaz_place_national.zip")
-        cousub_zip = self._download(CENSUS_URL.format(year=year, kind="cousubs"), raw_dir / f"{year}_Gaz_cousubs_national.zip")
+        place_zip = self._download(
+            CENSUS_URL.format(year=year, kind="place"), raw_dir / f"{year}_Gaz_place_national.zip"
+        )
+        cousub_zip = self._download(
+            CENSUS_URL.format(year=year, kind="cousubs"), raw_dir / f"{year}_Gaz_cousubs_national.zip"
+        )
         geonames_zip = self._download(GEONAMES_URL, raw_dir / "geonames_US.zip")
 
         self.stdout.write("Loading gazetteers...")
@@ -272,7 +282,10 @@ class Command(BaseCommand):
             for opis_id in sorted(resolved):
                 st, res = stations[opis_id], resolved[opis_id]
                 writer.writerow(
-                    [opis_id, st["city"], st["state"], f"{res.latitude:.5f}", f"{res.longitude:.5f}", res.source, res.method]
+                    [
+                        opis_id, st["city"], st["state"],
+                        f"{res.latitude:.5f}", f"{res.longitude:.5f}", res.source, res.method,
+                    ]
                 )
         self.stdout.write(f"Wrote {len(resolved)} station coordinates -> {path}")
 
@@ -319,7 +332,10 @@ class Command(BaseCommand):
                     outliers.append((dist, opis_id))
         if outliers:
             self.stdout.write(
-                self.style.WARNING(f"{len(outliers)} stations are >{RACK_OUTLIER_MILES:.0f} mi from their rack centroid (kept; review):")
+                self.style.WARNING(
+                    f"{len(outliers)} stations are >{RACK_OUTLIER_MILES:.0f} mi from their rack centroid "
+                    "(kept; review):"
+                )
             )
             for dist, opis_id in sorted(outliers, reverse=True):
                 st = stations[opis_id]

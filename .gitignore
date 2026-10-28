@@ -19,3 +19,6 @@ data/raw/
 .DS_Store
 .idea/
 .vscode/
+
+# Local cache (routes, geocoded addresses)
+.cache/

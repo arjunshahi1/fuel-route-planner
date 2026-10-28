@@ -116,5 +116,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Skipped (invalid price/id): {skipped_bad_price}")
         self.stdout.write(f"Unique US stations:         {len(stations)}")
         if missing_geocode:
-            self.stdout.write(self.style.WARNING(f"Skipped (no coordinates):   {len(missing_geocode)} {missing_geocode[:20]}"))
+            self.stdout.write(
+                self.style.WARNING(f"Skipped (no coordinates):   {len(missing_geocode)} {missing_geocode[:20]}")
+            )
         self.stdout.write(self.style.SUCCESS(f"Loaded {len(objects)} fuel stations."))

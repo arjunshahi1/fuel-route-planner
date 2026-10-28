@@ -7,6 +7,7 @@ are read from environment variables (optionally loaded from a `.env` file).
 """
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,7 +24,7 @@ SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
     "django-insecure-dev-only-key-change-me-in-production",
 )
-DEBUG = env_bool("DJANGO_DEBUG", True)
+DEBUG = env_bool("DJANGO_DEBUG", False)  # .env.example turns it on for local development
 ALLOWED_HOSTS = [
     h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
 ]
@@ -75,11 +76,19 @@ DATABASES = {
     }
 }
 
+# A file cache survives restarts, so routes and geocoded addresses are not
+# fetched again after a redeploy. Tests use an isolated in-memory cache.
+RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == "test"
 CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "fuel-route-planner",
-    }
+    "default": (
+        {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "fuel-route-planner-tests"}
+        if RUNNING_TESTS
+        else {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": os.environ.get("CACHE_DIR", str(BASE_DIR / ".cache")),
+            "OPTIONS": {"MAX_ENTRIES": 5000},
+        }
+    )
 }
 
 AUTH_PASSWORD_VALIDATORS = [
